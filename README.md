@@ -1,2 +1,2 @@
 # software-security
-📚 Безпека програмного забезпечення
+laboratory works, 7-th semester
