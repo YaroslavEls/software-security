@@ -6,6 +6,7 @@ const path = require('path');
 const port = process.env.PORT;
 const fs = require('fs');
 const request = require('request');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(bodyParser.json());
@@ -18,7 +19,7 @@ class Session {
 
     constructor() {
         try {
-            this.#sessions = fs.readFileSync('./sessions.json', 'utf8');
+            this.#sessions = fs.readFileSync(__dirname+'/sessions.json', 'utf8');
             this.#sessions = JSON.parse(this.#sessions.trim());
 
             console.log(this.#sessions);
@@ -60,6 +61,15 @@ app.use((req, res, next) => {
     let token = req.get(SESSION_KEY);
 
     if (token) {
+        const pkey = fs.readFileSync(__dirname+'/key', 'utf8');
+        try {
+            const decoded = jwt.verify(token, pkey);
+            console.log({ decoded });
+        } catch (err) {
+            console.error(err);
+            return res.status(401).end();
+        }
+
         if (!sessions.get(token)) {
             sessions.set(token)
         }
@@ -117,6 +127,10 @@ app.post('/api/login', (req, res) => {
     });
 });
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
+app.listen(port, async () => {
+    const pkey = await fetch(`https://${process.env.DOMAIN}/pem`)
+        .then(response => response.text());
+    fs.writeFileSync(__dirname+'/key', pkey);
+
+    console.log(`Example app listening on port ${port}`);
 });
