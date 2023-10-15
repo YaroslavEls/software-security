@@ -1,10 +1,11 @@
+require('dotenv').config();
 const uuid = require('uuid');
 const express = require('express');
-const onFinished = require('on-finished');
 const bodyParser = require('body-parser');
 const path = require('path');
-const port = 3000;
+const port = process.env.PORT;
 const fs = require('fs');
+const request = require('request');
 
 const app = express();
 app.use(bodyParser.json());
@@ -27,7 +28,11 @@ class Session {
     }
 
     #storeSessions() {
-        fs.writeFileSync('./sessions.json', JSON.stringify(this.#sessions), 'utf-8');
+        fs.writeFileSync(
+            __dirname+'/sessions.json', 
+            JSON.stringify(this.#sessions), 
+            'utf-8'
+        );
     }
 
     set(key, value) {
@@ -42,13 +47,6 @@ class Session {
         return this.#sessions[key];
     }
 
-    init(res) {
-        const sessionId = uuid.v4();
-        this.set(sessionId);
-
-        return sessionId;
-    }
-
     destroy(req, res) {
         const sessionId = req.sessionId;
         delete this.#sessions[sessionId];
@@ -59,36 +57,24 @@ class Session {
 const sessions = new Session();
 
 app.use((req, res, next) => {
-    let currentSession = {};
-    let sessionId = req.get(SESSION_KEY);
+    let token = req.get(SESSION_KEY);
 
-    if (sessionId) {
-        currentSession = sessions.get(sessionId);
-        if (!currentSession) {
-            currentSession = {};
-            sessionId = sessions.init(res);
+    if (token) {
+        if (!sessions.get(token)) {
+            sessions.set(token)
         }
-    } else {
-        sessionId = sessions.init(res);
+        req.session = sessions.get(token);
+        req.sessionId = token;
     }
-
-    req.session = currentSession;
-    req.sessionId = sessionId;
-
-    onFinished(req, () => {
-        const currentSession = req.session;
-        const sessionId = req.sessionId;
-        sessions.set(sessionId, currentSession);
-    });
 
     next();
 });
 
 app.get('/', (req, res) => {
-    if (req.session.username) {
+    if (req.session) {
         return res.json({
-            username: req.session.username,
-            logout: 'http://localhost:3000/logout'
+            username: req.session.login,
+            logout: `http://localhost:${port}/logout`
         })
     }
     res.sendFile(path.join(__dirname+'/index.html'));
@@ -99,39 +85,38 @@ app.get('/logout', (req, res) => {
     res.redirect('/');
 });
 
-const users = [
-    {
-        login: 'Login',
-        password: 'Password',
-        username: 'Username',
-    },
-    {
-        login: 'Login1',
-        password: 'Password1',
-        username: 'Username1',
-    }
-]
-
 app.post('/api/login', (req, res) => {
     const { login, password } = req.body;
 
-    const user = users.find((user) => {
-        if (user.login == login && user.password == password) {
-            return true;
+    const options = {
+        method: 'POST',
+        url: `https://${process.env.DOMAIN}/oauth/token`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        form: {
+            grant_type: 'password',
+            username: login,
+            password: password,
+            scope: 'offline_access',
+            client_id: process.env.CLIENT_ID,
+            client_secret: process.env.CLIENT_SECRET,
+            audience: `https://${process.env.DOMAIN}/api/v2/`
         }
-        return false
+    };
+    
+    request(options, function(error, response, body) {
+        if (error) throw new Error(error);
+
+        const data = JSON.parse(body);
+        if (response.statusCode == 200) {
+            sessions.set(data.access_token, {login});
+            req.session = sessions.get(data.access_token);
+            res.json({ token: data.access_token });
+        } 
+    
+        res.status(401).send();
     });
-
-    if (user) {
-        req.session.username = user.username;
-        req.session.login = user.login;
-
-        res.json({ token: req.sessionId });
-    }
-
-    res.status(401).send();
 });
 
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`)
-})
+});
