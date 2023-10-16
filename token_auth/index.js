@@ -1,9 +1,6 @@
 require('dotenv').config();
-const uuid = require('uuid');
 const express = require('express');
 const bodyParser = require('body-parser');
-const path = require('path');
-const port = process.env.PORT;
 const fs = require('fs');
 const request = require('request');
 const jwt = require('jsonwebtoken');
@@ -12,14 +9,30 @@ const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+const PORT = process.env.PORT;
+const DOMAIN = process.env.DOMAIN;
+
 const SESSION_KEY = 'Authorization';
+
+const SSO_LOGIN = `https://${DOMAIN}/authorize?` +
+    `client_id=${process.env.CLIENT_ID}&` +
+    `redirect_uri=http%3A%2F%2Flocalhost%3A${PORT}&` +
+    `response_type=code&response_mode=query&` +
+    `audience=https%3A%2F%2F${process.env.DOMAIN}%2Fapi%2Fv2%2F`;
+    
+const SSO_LOGOUT = `https://${DOMAIN}/v2/logout?` +
+    `client_id=${process.env.CLIENT_ID}&` +
+    `returnTo=http%3A%2F%2Flocalhost%3A${PORT}&`;
 
 class Session {
     #sessions = {}
 
     constructor() {
         try {
-            this.#sessions = fs.readFileSync(__dirname+'/sessions.json', 'utf8');
+            this.#sessions = fs.readFileSync(
+                __dirname+'/sessions.json', 
+                'utf8'
+            );
             this.#sessions = JSON.parse(this.#sessions.trim());
 
             console.log(this.#sessions);
@@ -80,15 +93,46 @@ app.use((req, res, next) => {
     next();
 });
 
-app.get('/', (req, res) => {
-    if (req.session) {
-        return res.json({
-            username: req.session.login,
-            logout: `http://localhost:${port}/logout`
-        })
+app.get('/', async (req, res) => {
+    const code = req.query.code;
+    const res_obj = {
+        logout: SSO_LOGOUT
     }
-    res.sendFile(path.join(__dirname+'/index.html'));
-})
+
+    if (!code) {
+        res.redirect(SSO_LOGIN);
+    } else {
+        const form = new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: process.env.CLIENT_ID,
+            client_secret: process.env.CLIENT_SECRET,
+            code: code,
+            redirect_uri: `http://localhost:${PORT}`,
+            audience: `https://${DOMAIN}/api/v2/`
+        });
+        const options = {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: form.toString()
+        };
+
+        await fetch(`https://${DOMAIN}/oauth/token`, options)
+            .then(response => response.json())
+            .then(data => {
+                if (!data.access_token) {
+                    throw new Error('request failed')
+                }
+                sessions.set(data.access_token);
+                res_obj.token = data.access_token;
+            })
+            .catch(error => {
+                console.error(error);
+                res_obj.message = error.toString();
+            });
+
+        return res.json(res_obj);
+    }
+});
 
 app.get('/logout', (req, res) => {
     sessions.destroy(req, res);
@@ -100,7 +144,7 @@ app.post('/api/login', (req, res) => {
 
     const options = {
         method: 'POST',
-        url: `https://${process.env.DOMAIN}/oauth/token`,
+        url: `https://${DOMAIN}/oauth/token`,
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         form: {
             grant_type: 'password',
@@ -109,7 +153,7 @@ app.post('/api/login', (req, res) => {
             scope: 'offline_access',
             client_id: process.env.CLIENT_ID,
             client_secret: process.env.CLIENT_SECRET,
-            audience: `https://${process.env.DOMAIN}/api/v2/`
+            audience: `https://${DOMAIN}/api/v2/`
         }
     };
     
@@ -127,10 +171,10 @@ app.post('/api/login', (req, res) => {
     });
 });
 
-app.listen(port, async () => {
-    const pkey = await fetch(`https://${process.env.DOMAIN}/pem`)
+app.listen(PORT, async () => {
+    const pkey = await fetch(`https://${DOMAIN}/pem`)
         .then(response => response.text());
     fs.writeFileSync(__dirname+'/key', pkey);
 
-    console.log(`Example app listening on port ${port}`);
+    console.log(`Example app listening on port ${PORT}`);
 });
